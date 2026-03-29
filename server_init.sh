@@ -85,6 +85,16 @@ else
     echo -e "${GREEN}cloudflared 安装完成！${NC}"
 fi
 
+# 8. 网络加速：开启原生 BBR 并下载魔改脚本备用
+echo -e "${YELLOW}>>> 8. 配置网络加速...${NC}"
+# 开启原生 BBR
+if ! sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
+    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+    sysctl -p > /dev/null
+    echo -e "${GREEN}原生 BBR 已激活。${NC}"
+fi
+
 echo -e "${GREEN}=========================================${NC}"
 echo -e "${GREEN}  服务器初始化完成！Enjoy your coding!   ${NC}"
 echo -e "${GREEN}=========================================${NC}"
