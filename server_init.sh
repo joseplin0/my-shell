@@ -63,8 +63,10 @@ else
         SWAP_SIZE="4G"
     fi
     echo -e "${GREEN}检测到物理内存为 ${TOTAL_MEM}MB，准备分配 ${SWAP_SIZE} 的 Swap...${NC}"
-    # 使用 dd 兼容性更好
-    dd if=/dev/zero of=/swapfile bs=1M count=$(echo $SWAP_SIZE | sed 's/G/1024/')
+    
+    # 优先使用 fallocate (瞬间完成)，如果失败则回退到修正后的 dd
+    fallocate -l $SWAP_SIZE /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=$(( ${SWAP_SIZE%G} * 1024 ))
+    
     chmod 600 /swapfile
     mkswap /swapfile
     swapon /swapfile
