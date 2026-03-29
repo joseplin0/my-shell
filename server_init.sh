@@ -2,7 +2,7 @@
 
 # =========================================================
 # 脚本名称: server_init.sh
-# 功能: 系统更新、基础工具安装、Swap配置、Docker/ZeroTier/Cloudflare安装、BBR优化及防火墙配置
+# 功能: 系统更新、基础工具安装、Swap配置、Docker/ZeroTier/Cloudflare安装、BBR优化
 # 适用系统: Debian / Ubuntu
 # =========================================================
 
@@ -45,7 +45,7 @@ echo -e "${YELLOW}>>> 2. 正在安装必备工具...${NC}"
 apt-get install -y \
     curl wget git htop vim unzip zip \
     software-properties-common jq tmux lsof net-tools \
-    ufw sudo ca-certificates gnupg
+    sudo ca-certificates gnupg
 
 # 3. 设置时区为 Asia/Shanghai
 echo -e "${YELLOW}>>> 3. 正在配置系统时区为 Asia/Shanghai...${NC}"
@@ -120,36 +120,11 @@ if ! sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
     echo -e "${GREEN}原生 BBR 已激活。${NC}"
 fi
 
-# 9. 防火墙配置 (UFW)
-echo -e "${YELLOW}>>> 9. 正在配置 UFW 防火墙...${NC}"
-# 检查当前 SSH 端口，防止失联
-SSH_PORT=$(ss -tlnp | grep sshd | awk '{print $4}' | awk -F: '{print $NF}' | head -n1)
-SSH_PORT=${SSH_PORT:-22}
-
-echo -e "${GREEN}检测到 SSH 端口为: ${SSH_PORT}，正在配置规则...${NC}"
-
-# 默认规则
-ufw default deny incoming
-ufw default allow outgoing
-
-# 允许常用端口
-ufw allow "$SSH_PORT"/tcp
-ufw allow 80/tcp
-ufw allow 443/tcp
-
-# 提示：如果你有特定的 ZeroTier 或其他端口，可以在此添加
-ufw allow 9993/udp
-
-# 启用防火墙 (使用 --force 避免交互)
-ufw --force enable
-echo -e "${GREEN}UFW 防火墙已启动并配置完成。${NC}"
-
-# 10. 系统清理
-echo -e "${YELLOW}>>> 10. 正在清理冗余软件包...${NC}"
+# 9. 系统清理
+echo -e "${YELLOW}>>> 9. 正在清理冗余软件包...${NC}"
 apt-get autoremove -y
 apt-get clean
 
 echo -e "${GREEN}=========================================${NC}"
-echo -e "${GREEN}    服务器初始化完成！Enjoy your coding!   ${NC}"
-echo -e "${GREEN}    请记得重新登录以激活 Docker 用户组权限。 ${NC}"
+echo -e "${GREEN}    服务器初始化完成！Enjoy your coding!    ${NC}"
 echo -e "${GREEN}=========================================${NC}"
