@@ -1,10 +1,25 @@
 #!/bin/bash
 
+# =========================================================
+# 脚本名称: server_init.sh
+# 功能: 系统更新、基础工具安装、Swap配置、Docker/ZeroTier/Cloudflare安装、BBR优化及防火墙配置
+# 适用系统: Debian / Ubuntu
+# =========================================================
+
 # 定义颜色输出
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
+
+# 检查是否为 root 用户
+if [ "$EUID" -ne 0 ]; then
+    echo -e "${RED}错误: 请使用 root 权限或 sudo 运行此脚本。${NC}"
+    exit 1
+fi
+
+# 获取真正的用户（用于 Docker 权限）
+REAL_USER=${SUDO_USER:-$USER}
 
 # 动态识别当前的操作系统名称
 if [ -f /etc/os-release ]; then
@@ -16,16 +31,21 @@ fi
 
 echo -e "${GREEN}=========================================${NC}"
 echo -e "${GREEN}    开始自动初始化 ${OS_NAME} 服务器     ${NC}"
+echo -e "${GREEN}    当前操作用户: ${REAL_USER}             ${NC}"
 echo -e "${GREEN}=========================================${NC}"
 
 # 1. 更新系统软件包
 echo -e "${YELLOW}>>> 1. 正在更新系统软件包索引...${NC}"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -y && apt-get upgrade -y
+apt-get update -y
+apt-get upgrade -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold"
 
-# 2. 安装基础工具 (增加了 jq, tmux, lsof, net-tools)
-echo -e "${YELLOW}>>> 2. 正在安装必备开发与网络工具...${NC}"
-apt-get install -y curl wget git htop vim unzip zip software-properties-common jq tmux lsof net-tools
+# 2. 安装基础工具
+echo -e "${YELLOW}>>> 2. 正在安装必备工具...${NC}"
+apt-get install -y \
+    curl wget git htop vim unzip zip \
+    software-properties-common jq tmux lsof net-tools \
+    ufw sudo ca-certificates gnupg
 
 # 3. 设置时区为 Asia/Shanghai
 echo -e "${YELLOW}>>> 3. 正在配置系统时区为 Asia/Shanghai...${NC}"
@@ -43,7 +63,8 @@ else
         SWAP_SIZE="4G"
     fi
     echo -e "${GREEN}检测到物理内存为 ${TOTAL_MEM}MB，准备分配 ${SWAP_SIZE} 的 Swap...${NC}"
-    fallocate -l $SWAP_SIZE /swapfile
+    # 使用 dd 兼容性更好
+    dd if=/dev/zero of=/swapfile bs=1M count=$(echo $SWAP_SIZE | sed 's/G/1024/')
     chmod 600 /swapfile
     mkswap /swapfile
     swapon /swapfile
@@ -51,50 +72,84 @@ else
     echo -e "${GREEN}Swap 创建并启用成功！${NC}"
 fi
 
-# 5. 安装 Docker & Docker Compose (官方一键安装脚本，自带幂等性)
+# 5. 安装 Docker & Docker Compose
 echo -e "${YELLOW}>>> 5. 正在检查并安装 Docker...${NC}"
 if command -v docker &> /dev/null; then
     echo -e "${GREEN}Docker 已经安装，跳过下载。${NC}"
 else
     echo -e "${GREEN}未检测到 Docker，正在执行官方安装脚本...${NC}"
-    curl -fsSL https://get.docker.com | sudo bash
-    # 将当前系统默认用户(ubuntu或debian)加入docker组，免sudo运行
-    usermod -aG docker $USER || true
+    curl -fsSL https://get.docker.com | bash
+    # 将实际用户加入 docker 组
+    if [ "$REAL_USER" != "root" ]; then
+        usermod -aG docker "$REAL_USER"
+        echo -e "${GREEN}已将用户 ${REAL_USER} 加入 docker 组。${NC}"
+    fi
     echo -e "${GREEN}Docker 安装完成！${NC}"
 fi
 
 # 6. 安装 ZeroTier
 echo -e "${YELLOW}>>> 6. 正在检查并安装 ZeroTier...${NC}"
 if command -v zerotier-cli &> /dev/null; then
-    echo -e "${GREEN}ZeroTier 已经安装，跳过下载。${NC}"
+    echo -e "${GREEN}ZeroTier 已经安装。${NC}"
 else
-    curl -s https://install.zerotier.com | sudo bash
+    curl -s https://install.zerotier.com | bash
     echo -e "${GREEN}ZeroTier 安装完成！${NC}"
 fi
 
-# 7. 安装 Cloudflare Tunnel (cloudflared)
+# 7. 安装 Cloudflare Tunnel
 echo -e "${YELLOW}>>> 7. 正在检查并安装 Cloudflare Tunnel...${NC}"
 if command -v cloudflared &> /dev/null; then
-    echo -e "${GREEN}cloudflared 已经安装，跳过下载。${NC}"
+    echo -e "${GREEN}cloudflared 已经安装。${NC}"
 else
     mkdir -p --mode=0755 /usr/share/keyrings
-    curl -fsSL https://pkg.cloudflare.com/cloudflare-public-v2.gpg | tee /usr/share/keyrings/cloudflare-public-v2.gpg >/dev/null
-    echo 'deb [signed-by=/usr/share/keyrings/cloudflare-public-v2.gpg] https://pkg.cloudflare.com/cloudflared any main' | tee /etc/apt/sources.list.d/cloudflared.list
-    apt-get update -y
-    apt-get install -y cloudflared
+    curl -fsSL https://pkg.cloudflare.com/cloudflare-public-v2.gpg | gpg --dearmor -o /usr/share/keyrings/cloudflare-public-v2.gpg
+    echo "deb [signed-by=/usr/share/keyrings/cloudflare-public-v2.gpg] https://pkg.cloudflare.com/cloudflared any main" > /etc/apt/sources.list.d/cloudflared.list
+    apt-get update -y && apt-get install -y cloudflared
     echo -e "${GREEN}cloudflared 安装完成！${NC}"
 fi
 
-# 8. 网络加速：开启原生 BBR 并下载魔改脚本备用
-echo -e "${YELLOW}>>> 8. 配置网络加速...${NC}"
-# 开启原生 BBR
+# 8. 网络加速：开启原生 BBR
+echo -e "${YELLOW}>>> 8. 配置网络加速 (BBR)...${NC}"
 if ! sysctl net.ipv4.tcp_congestion_control | grep -q "bbr"; then
-    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+    # 清理旧配置并使用 tee 写入，确保权限无虞
+    sed -i '/net.core.default_qdisc/d' /etc/sysctl.conf
+    sed -i '/net.ipv4.tcp_congestion_control/d' /etc/sysctl.conf
+    echo "net.core.default_qdisc=fq" | tee -a /etc/sysctl.conf > /dev/null
+    echo "net.ipv4.tcp_congestion_control=bbr" | tee -a /etc/sysctl.conf > /dev/null
     sysctl -p > /dev/null
     echo -e "${GREEN}原生 BBR 已激活。${NC}"
 fi
 
+# 9. 防火墙配置 (UFW)
+echo -e "${YELLOW}>>> 9. 正在配置 UFW 防火墙...${NC}"
+# 检查当前 SSH 端口，防止失联
+SSH_PORT=$(ss -tlnp | grep sshd | awk '{print $4}' | awk -F: '{print $NF}' | head -n1)
+SSH_PORT=${SSH_PORT:-22}
+
+echo -e "${GREEN}检测到 SSH 端口为: ${SSH_PORT}，正在配置规则...${NC}"
+
+# 默认规则
+ufw default deny incoming
+ufw default allow outgoing
+
+# 允许常用端口
+ufw allow "$SSH_PORT"/tcp
+ufw allow 80/tcp
+ufw allow 443/tcp
+
+# 提示：如果你有特定的 ZeroTier 或其他端口，可以在此添加
+ufw allow 9993/udp
+
+# 启用防火墙 (使用 --force 避免交互)
+ufw --force enable
+echo -e "${GREEN}UFW 防火墙已启动并配置完成。${NC}"
+
+# 10. 系统清理
+echo -e "${YELLOW}>>> 10. 正在清理冗余软件包...${NC}"
+apt-get autoremove -y
+apt-get clean
+
 echo -e "${GREEN}=========================================${NC}"
-echo -e "${GREEN}  服务器初始化完成！Enjoy your coding!   ${NC}"
+echo -e "${GREEN}    服务器初始化完成！Enjoy your coding!   ${NC}"
+echo -e "${GREEN}    请记得重新登录以激活 Docker 用户组权限。 ${NC}"
 echo -e "${GREEN}=========================================${NC}"
